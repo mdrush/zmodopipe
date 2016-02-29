@@ -56,6 +56,7 @@ typedef enum CameraModel
 	cnmclassic,	// CnM Classic 4 Cam
 	visionari,	// Visionari 4/8 channel DVR
 	swannmedia,	// Swann media
+	qt5682 // Q-See QT-5682
 } CameraModel;
 
 // Structure for logging into QSee/Zmodo DVR's mobile port
@@ -136,6 +137,17 @@ struct SwannLoginMedia
 	char filler[422];	//422 Filler (more unknown)
 };	// Total size:		  507 bytes
 
+// Structure for logging into QSee QT-5682
+struct QSee5682Login
+{
+	char vala[32];		// 44 bytes, special values
+	char user[8];		//  8 username field
+	char valb[28];		// 28 unknown values
+	char pass[6];		//  6 password field
+	char valc[30];		// 30 more unknown
+	char host[8];		//  8 Hostname, apparently (how big??)
+	char filler[32];	// 32 Filler (more unknown)
+};	// Total size:		  144 bytes
 
 #define MAX_CHANNELS 16		// maximum channels to support (I've only seen max of 16).
 
@@ -168,6 +180,7 @@ int ConnectDVR8104ViaMobile(int sockFd, int channel);
 int ConnectCnMClassic(int sockFd, int channel);
 int ConnectSwannViaMedia(int sockFd, int channel);
 int ConnectVisionari(int sockFd, int channel);
+int ConnectQT5682(int sockFd, int channel);
 
 // Function pointer list
 int (*pConnectFunc[])(int, int) = {
@@ -180,6 +193,7 @@ int (*pConnectFunc[])(int, int) = {
 	ConnectCnMClassic,
 	ConnectVisionari,
 	ConnectSwannViaMedia,
+	ConnectQT5682
 };
 
 void printBuffer(char *pbuf, size_t len)
@@ -291,6 +305,7 @@ int main(int argc, char**argv)
 			globalArgs.port = 9000;
 			break;
 		case qt504:
+		case qt5682:
 			globalArgs.port = 6036;
 			break;
 		case dvr8104_mobile:
@@ -658,6 +673,7 @@ void display_usage(char *name)
 		"    \t\t6 - CnM Classic 4 Cam DVR\n"
 		"    \t\t7 - Visionari 4/8 Channel DVR\n"
 		"    \t\t8 - Swann DM-70D and compatible\n"
+		"    \t\t9 - QT5682 and compatible\n"
 	"\n");
 }
 
@@ -1245,3 +1261,109 @@ int ConnectSwannViaMedia(int sockFd, int channel)
 	return 0;
 }
 
+int ConnectQT5682(int sockFd, int channel)
+{
+	// This gives the master stream rather than the sub stream
+	bool highres = false;
+
+	//char suppLoginBuf[88] = {0};
+	struct QSee5682Login loginBuf;
+	int retval;
+	char recvBuf[532];
+	static bool beenHere = false;
+
+	memset(&loginBuf, 0, sizeof(loginBuf));
+
+	// This part is the same as the QT504
+	loginBuf.vala[0] = 0x31;
+	loginBuf.vala[1] = 0x31;
+	loginBuf.vala[2] = 0x31;
+	loginBuf.vala[3] = 0x31;
+	loginBuf.vala[4] = 0x88;
+	loginBuf.vala[8] = 0x01;
+	loginBuf.vala[9] = 0x01;
+	loginBuf.vala[12] = 0xff;
+	loginBuf.vala[13] = 0xff;
+	loginBuf.vala[14] = 0xff;
+	loginBuf.vala[15] = 0xff;
+	loginBuf.vala[16] = 0x04;
+	loginBuf.vala[20] = 0x78;
+	loginBuf.vala[24] = 0x03;
+
+	strcpy(loginBuf.user, globalArgs.username);
+	strcpy(loginBuf.pass, globalArgs.password);
+	
+	if( globalArgs.verbose && beenHere == false )
+	{
+		printBuffer((char*)&loginBuf, sizeof(loginBuf));
+	}
+
+	// Send the login packet (1 of 4)
+	retval = send(sockFd, (char*)(&loginBuf), sizeof(loginBuf), 0);
+
+	if( globalArgs.verbose )
+	{
+		printMessage(true, "Ch %i: Send 1 result: %i\n", channel+1, retval);
+	}
+
+	// do reading
+	// Get header length (4 bytes)
+	retval = recv(sockFd, &recvBuf, 532, 0);
+
+	// Verify send was successful
+	if( retval != 372 )
+	{
+		printMessage(true, "Ch %i: Receive 1 failed: %i\n", channel+1, retval);
+		if (retval == 64) {
+			retval = send(sockFd, (char*)(&loginBuf), sizeof(loginBuf), 0);
+			if( globalArgs.verbose )
+			{
+				printMessage(true, "Ch %i: Send 1 result: %i\n", channel+1, retval);
+			}
+		}
+	}
+
+	retval = 0;
+	{
+	int ret = 0;
+	while( (ret = recv(sockFd, recvBuf, sizeof(recvBuf), 0)) > 0 )
+		retval += ret;
+	}
+
+	char suppLoginBuf[] = {
+	0x31, 0x31, 0x31, 0x31, 0x34, 0x00, 0x00, 0x00, 
+	0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x01, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00/*high res*/, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00/*low res*/, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00 };
+
+	if (channel <= 7 && channel >= 0) {
+		if (highres) {
+			suppLoginBuf[28] = channel+1;
+		}
+		else {
+			suppLoginBuf[36] = channel+1;
+		}
+	}
+
+	if( globalArgs.verbose && beenHere == false )
+	{
+		printBuffer((char*)&suppLoginBuf, 60);
+		beenHere = true;
+	}
+
+	retval = send(sockFd, suppLoginBuf, 60, 0);
+
+	if( globalArgs.verbose )
+	 {
+	 	printMessage(true, "Ch %i: Send 2 result: %i\n", channel+1, retval);
+	 }
+
+
+
+	// If we got here, the stream will be waiting for us to recv.
+	return 0;
+}
